@@ -11,18 +11,18 @@ The process selection is done either by:
 
 
 It then call `jstat -gc` and `jstat -gccapacity` to catch current and
-maximum *heap* and *perm* sizes.
-What is called *heap* here is the edden + old generation space,
-while *perm* represents the permanent generation space.
+maximum *heap* and *metaspace* sizes.
+What is called *heap* here is the survivor(s) + eden + old generation space,
+while *metaspace* represents the meta space generation space.
 
 If specified (with -w and -c options) values can be checked with
-**WARNING** or **CRITICAL** thresholds (apply to both heap and perm regions).
+**WARNING** or **CRITICAL** thresholds (apply to both heap and metaspace regions).
 
 This plugin also attach perfomance data to the output:
 
     pid=<pid>
     heap=<heap-size-used>;<heap-max-size>;<%ratio>;<warning-threshold-%ratio>;<critical-threshold-%ratio>
-    perm=<perm-size-used>;<perm-max-size>;<%ratio>;<warning-threshold-%ratio>;<critical-threshold-%ratio>
+    metaspace=<metaspace-size-used>;<metaspace-max-size>;<%ratio>;<warning-threshold-%ratio>;<critical-threshold-%ratio>
 
 
 
