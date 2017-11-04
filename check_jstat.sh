@@ -7,20 +7,21 @@
 # service name (-s) (assuming there is a /var/run/<name>.pid file
 # holding its pid) is running and is a java process.
 # It then calls jstat -gc and jstat -gccapacity to catch current and
-# maximum 'heap' and 'perm' sizes.
-# What is called 'heap' here is the edden + old generation space,
-# while 'perm' represents the permanent generation space or metaspace
-# for java 1.8.
+# maximum 'heap' and 'metaspace' sizes.
+# What is called 'heap' here is the survivor(s) + eden + old generation space,
+# while 'metaspace' represents the metaspace for java 1.8.
 # If specified (with -w and -c options) values can be checked with
-# WARNING or CRITICAL thresholds (apply to both heap and perm regions).
+# WARNING or CRITICAL thresholds (apply to both heap and metaspace regions).
 # This plugin also attach perfomance data to the output:
 #  pid=<pid>
 #  heap=<heap-size-used>;<heap-max-size>;<%ratio>;<warning-threshold-%ratio>;<critical-threshold-%ratio>
-#  perm=<perm-size-used>;<perm-max-size>;<%ratio>;<warning-threshold-%ratio>;<critical-threshold-%ratio>
+#  metaspace=<metaspace-size-used>;<metaspace-max-size>;<%ratio>;<warning-threshold-%ratio>;<critical-threshold-%ratio>
 #
 #
 # Created: 2012, June
 # By: Eric Blanchard
+# Modified: 2017, November
+# By Jani Haglund
 # License: LGPL v2.1
 #
 
@@ -158,57 +159,92 @@ else
     fi
 fi
 
-gc=$(jstat -gc $pid | tail -1 | sed -e 's/[ ][ ]*/ /g')
-if [ -z "$gc" ]; then
+gcraw=$(jstat -gc $pid 2>/dev/null)
+if [ $? -ne 0 ]; then
     echo "CRITICAL: Can't get GC statistics"
     exit 2
 fi
-#echo "gc=$gc"
-set -- $gc
-eu=$(($(expr "${6}" : '\([0-9]*\)')*1024))
-ou=$(($(expr "${8}" : '\([0-9]*\)')*1024))
-pu=$(($(expr "${10}" : '\([0-9]*\)')*1024))
+heap=$(
+    echo "$gcraw" | awk '
+        NR == 1 { \
+            for ( i = 1; i <= NF; i++ ) { \
+                f[ $i ] = i \
+            } \
+        } \
+        NR == 2 { \
+            printf ( "%d", $(f["S0U"]) + $(f["S1U"]) + $(f["EU"]) + $(f["OU"]) ) \
+        }
+    '
+)
+#echo "heap=$heap"
+heapmx=$(
+    echo "$gcraw" | awk '
+        NR == 1 { \
+            for ( i = 1; i <= NF; i++ ) { \
+                f[$i] = i \
+            } \
+        } \
+        NR == 2 { \
+            printf ( "%d", $(f["S0C"]) + $(f["S1C"]) + $(f["EC"]) + $(f["OC"]) ) \
+        }
+    '
+)
+#echo "heapmx=$heapmx"
 
-gccapacity=$(jstat -gccapacity $pid | tail -1 | sed -e 's/[ ][ ]*/ /g')
-if [ -z "$gccapacity" ]; then
-    echo "CRITICAL: Can't get GC capacity"
+ms=$(
+    echo "$gcraw" | awk '
+        NR == 1 { \
+            for ( i = 1; i <= NF; i++ ) { \
+                f[ $i ] = i \
+            } \
+        } \
+        NR == 2 { \
+            printf ( "%d", $(f["MU"]) ) \
+        }
+    '
+)
+#echo "ms=$ms"
+msraw=$(jstat -gcmetacapacity $pid 2>/dev/null)
+if [ $? -ne 0 ]; then
+    echo "CRITICAL: Can't get MetaSpace statistics"
     exit 2
 fi
+msmx=$(
+    echo "$msraw" | awk '
+        NR == 1 { \
+            for ( i = 1; i <= NF; i++ ) { \
+                f[$i] = i \
+            } \
+        } \
+        NR == 2 { \
+            printf ( "%d", $(f["MCMX"]) ) \
+        }
+    '
+)
+#echo "msmx=$msmx"
 
-#echo "gccapacity=$gccapacity"
-set -- $gccapacity
-ygcmx=$(($(expr "${2}" : '\([0-9]*\)')*1024))
-ogcmx=$(($(expr "${8}" : '\([0-9]*\)')*1024))
-pgcmx=$(($(expr "${12}" : '\([0-9]*\)')*1024))
-
-#echo "eu=${eu}k ygcmx=${ygcmx}k"
-#echo "ou=${ou}k ogcmx=${ogcmx}k"
-#echo "pu=${pu}k pgcmx=${pgcmx}k"
-
-heap=$((($eu + $ou)))
-heapmx=$((($ygcmx)))
 heapratio=$((($heap * 100) / $heapmx))
-permratio=$((($pu * 100) / $pgcmx))
+metaspaceratio=$((($ms * 100) / $msmx))
 
 heapw=$(($heapmx * $ws / 100))
 heapc=$(($heapmx * $cs / 100))
-permw=$(($pgcmx * $ws / 100))
-permc=$(($pgcmx * $cs / 100))
+metaspacew=$(($msmx * $ws / 100))
+metaspacec=$(($msmx * $cs / 100))
 
 #echo "youg+old=${heap}k, (Max=${heapmx}k, current=${heapratio}%)"
-#echo "perm=${pu}k, (Max=${pgcmx}k, current=${permratio}%)"
+#echo "metaspace=${ms}k, (Max=${msmx}k, current=${metaspaceratio}%)"
 
 
-#perfdata="pid=$pid heap=$heap;$heapmx;$heapratio;$ws;$cs perm=$pu;$pgcmx;$permratio;$ws;$cs"
+#perfdata="pid=$pid heap=$heap;$heapmx;$heapratio;$ws;$cs metaspace=$ms;$msmx;$metaspaceratio;$ws;$cs"
 #perfdata="pid=$pid"
 perfdata=""
-perfdata="${perfdata} heap=${heap}B;$heapw;$heapc;0;$heapmx"
+perfdata="${perfdata} heap=${heap};$heapw;$heapc;0;$heapmx"
 perfdata="${perfdata} heap_ratio=${heapratio}%;$ws;$cs;0;100"
-perfdata="${perfdata} perm=${pu}B;$permw;$permc;0;$pgcmx"
-perfdata="${perfdata} perm_ratio=${permratio}%;$ws;$cs;0;100"
+perfdata="${perfdata} metaspace=${ms};$metaspacew;$metaspacec;0;$msmx"
+perfdata="${perfdata} metaspace_ratio=${metaspaceratio}%;$ws;$cs;0;100"
 
-if [ $cs -gt 0 -a $permratio -ge $cs ]; then
-    echo "CRITICAL: jstat process $label critical PermGen (${permratio}% of MaxPermSize)|$perfdata"
+if [ $cs -gt 0 -a $metaspaceratio -ge $cs ]; then
+    echo "CRITICAL: jstat process $label critical MetaSpace (${metaspaceratio}% of MaxMetaSpaceSize)|$perfdata"
     exit 2
 fi
 if [ $cs -gt 0 -a $heapratio -ge $cs ]; then
@@ -216,8 +252,8 @@ if [ $cs -gt 0 -a $heapratio -ge $cs ]; then
     exit 2
 fi
 
-if [ $ws -gt 0 -a $permratio -ge $ws ]; then
-    echo "WARNING: jstat process $label warning PermGen (${permratio}% of MaxPermSize)|$perfdata"
+if [ $ws -gt 0 -a $metaspaceratio -ge $ws ]; then
+    echo "WARNING: jstat process $label warning MetaSpace (${metaspaceratio}% of MaxMetaSpaceSize)|$perfdata"
     exit 1
 fi
 if [ $ws -gt 0 -a $heapratio -ge $ws ]; then
